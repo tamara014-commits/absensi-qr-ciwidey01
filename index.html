@@ -1,0 +1,361 @@
+
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Absensi QR - SDN Ciwidey 01</title>
+
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+      background: #f1f5f9;
+      color: #1e293b;
+    }
+
+    .container {
+      max-width: 520px;
+      margin: 20px auto;
+      background: white;
+      padding: 22px;
+      border-radius: 16px;
+      box-shadow: 0 4px 18px #00000012;
+    }
+
+    h2 { text-align: center; margin-bottom: 5px; }
+    .subtitle {
+      text-align: center;
+      color: #64748b;
+      margin-top: 0;
+      margin-bottom: 22px;
+    }
+
+    label {
+      display: block;
+      font-weight: bold;
+      margin: 14px 0 7px;
+    }
+
+    input, select, button {
+      width: 100%;
+      padding: 13px;
+      border-radius: 9px;
+      font-size: 16px;
+    }
+
+    input, select {
+      border: 1px solid #cbd5e1;
+      background: white;
+    }
+
+    button {
+      border: none;
+      cursor: pointer;
+      font-weight: bold;
+      margin-top: 12px;
+    }
+
+    .start { background: #15803d; color: white; }
+    .stop { background: #dc2626; color: white; }
+    .send { background: #1d4ed8; color: white; }
+
+    #reader {
+      width: 100%;
+      margin-top: 18px;
+      overflow: hidden;
+      border-radius: 10px;
+    }
+
+    #status {
+      margin-top: 18px;
+      padding: 14px;
+      border-radius: 10px;
+      background: #eff6ff;
+      line-height: 1.6;
+      overflow-wrap: anywhere;
+    }
+
+    .success { background: #dcfce7 !important; }
+    .error { background: #fee2e2 !important; }
+
+    .note {
+      font-size: 13px;
+      color: #64748b;
+      line-height: 1.5;
+      margin-top: 18px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <h2>ABSENSI QR</h2>
+    <p class="subtitle">SDN CIWIDEY 01 – Kelas V B</p>
+
+    <label>Nama Petugas</label>
+    <input id="operator" type="text" placeholder="Masukkan nama petugas">
+
+    <label>Jenis Absensi</label>
+    <select id="mode">
+      <option value="DATANG">ABSENSI DATANG</option>
+      <option value="PULANG">ABSENSI PULANG</option>
+    </select>
+
+    <button class="start" onclick="startScanner()">
+      AKTIFKAN KAMERA
+    </button>
+
+    <button class="stop" onclick="stopScanner()">
+      MATIKAN KAMERA
+    </button>
+
+    <div id="reader"></div>
+
+    <label>Atau masukkan token QR secara manual</label>
+    <input id="manualToken" type="text" placeholder="Masukkan token QR">
+
+    <button class="send" onclick="sendManualToken()">
+      KIRIM ABSENSI MANUAL
+    </button>
+
+    <div id="status">
+      Silakan isi nama petugas, pilih jenis absensi, lalu aktifkan kamera.
+    </div>
+
+    <p class="note">
+      Pastikan kamera mendapat izin dari browser.
+      Setiap siswa hanya dapat melakukan satu kali absensi datang
+      dan satu kali absensi pulang pada tanggal yang sama.
+    </p>
+  </div>
+
+  <script>
+    // Alamat Web App Google Apps Script
+    const GAS_URL =
+      "https://script.google.com/macros/s/AKfycbxTeegS7Cgk-YGtQkYwZZWWkGGCEyKuIAFtdcc-FYag09VQF7qh1Ff6EdBfTiwMM2l7lQ/exec";
+
+    let scanner = null;
+    let busy = false;
+    let bridgeFrame = null;
+
+    function showStatus(message, type = "") {
+      const box = document.getElementById("status");
+      box.className = type;
+      box.innerHTML = message;
+    }
+
+    function getOperator() {
+      return document.getElementById("operator").value.trim();
+    }
+
+    function getMode() {
+      return document.getElementById("mode").value;
+    }
+
+    async function startScanner() {
+      if (busy) return;
+
+      if (!getOperator()) {
+        showStatus("Masukkan nama petugas terlebih dahulu.", "error");
+        return;
+      }
+
+      if (typeof Html5Qrcode === "undefined") {
+        showStatus("Library scanner belum berhasil dimuat. Periksa koneksi internet.", "error");
+        return;
+      }
+
+      if (scanner) return;
+
+      try {
+        scanner = new Html5Qrcode("reader");
+
+        await scanner.start(
+          { facingMode: "environment" },
+          {
+            fps: 10,
+            qrbox: { width: 230, height: 230 }
+          },
+          async (decodedText) => {
+            if (busy) return;
+
+            busy = true;
+            await stopScanner();
+            sendToken(decodedText);
+          }
+        );
+
+        showStatus("Kamera aktif. Arahkan QR siswa ke kamera.");
+
+      } catch (error) {
+        scanner = null;
+        showStatus("Kamera gagal dibuka: " + error, "error");
+      }
+    }
+
+    async function stopScanner() {
+      if (!scanner) return;
+
+      const currentScanner = scanner;
+      scanner = null;
+
+      try {
+        if (currentScanner.isScanning) {
+          await currentScanner.stop();
+        }
+        await currentScanner.clear();
+      } catch (error) {
+        console.log("Scanner berhenti:", error);
+      }
+    }
+
+    function sendManualToken() {
+      const token = document.getElementById("manualToken").value.trim();
+
+      if (!token) {
+        showStatus("Masukkan token QR terlebih dahulu.", "error");
+        return;
+      }
+
+      sendToken(token);
+    }
+
+    function sendToken(token) {
+      if (busy && !scanner) {
+        // Pemindaian kamera sudah mengunci proses.
+        // Fungsi tetap dilanjutkan untuk token yang baru dipindai.
+      }
+
+      if (!getOperator()) {
+        busy = false;
+        showStatus("Nama petugas wajib diisi.", "error");
+        return;
+      }
+
+      if (!token) {
+        busy = false;
+        showStatus("Token QR kosong.", "error");
+        return;
+      }
+
+      busy = true;
+      showStatus("Mengirim data absensi ke server...");
+
+      const requestId =
+        Date.now().toString() + Math.random().toString(36).slice(2);
+
+      const iframe = document.createElement("iframe");
+      iframe.name = "gas_bridge_" + requestId;
+      iframe.style.display = "none";
+
+      document.body.appendChild(iframe);
+      bridgeFrame = iframe;
+
+      let completed = false;
+
+      function cleanup() {
+        window.removeEventListener("message", receiveMessage);
+        if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
+        if (bridgeFrame === iframe) bridgeFrame = null;
+        busy = false;
+      }
+
+      function receiveMessage(event) {
+        if (event.source !== iframe.contentWindow) return;
+
+        const data = event.data;
+
+        if (
+          !data ||
+          data.type !== "ABSENSI_QR_RESULT" ||
+          data.requestId !== requestId
+        ) return;
+
+        completed = true;
+        clearTimeout(timeout);
+
+        if (data.ok) {
+          const r = data.result || {};
+
+          showStatus(
+            "<strong>ABSENSI BERHASIL</strong><br>" +
+            "Nama: " + escapeHtml(r.nama || "-") + "<br>" +
+            "Kelas: " + escapeHtml(r.kelas || "-") + "<br>" +
+            "Jenis: " + escapeHtml(r.mode || getMode()) + "<br>" +
+            "Waktu: " + escapeHtml(r.waktu || "-") + "<br>" +
+            "Status: Data diterima server.",
+            "success"
+          );
+
+          document.getElementById("manualToken").value = "";
+
+        } else {
+          showStatus(
+            "<strong>ABSENSI GAGAL</strong><br>" +
+            escapeHtml(data.error || "Terjadi kesalahan."),
+            "error"
+          );
+        }
+
+        cleanup();
+      }
+
+      window.addEventListener("message", receiveMessage);
+
+      const timeout = setTimeout(() => {
+        if (completed) return;
+
+        showStatus(
+          "Belum menerima jawaban server. Periksa koneksi internet dan deployment Apps Script. Jangan mengulang scan sebelum memeriksa data absensi.",
+          "error"
+        );
+
+        cleanup();
+      }, 25000);
+
+      const form = document.createElement("form");
+      form.method = "POST";
+      form.action = GAS_URL;
+      form.target = iframe.name;
+      form.style.display = "none";
+
+      const fields = {
+        token: token,
+        mode: getMode(),
+        operator: getOperator(),
+        requestId: requestId
+      };
+
+      Object.keys(fields).forEach((key) => {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = key;
+        input.value = fields[key];
+        form.appendChild(input);
+      });
+
+      document.body.appendChild(form);
+      form.submit();
+      form.remove();
+    }
+
+    function escapeHtml(value) {
+      return String(value).replace(/[&<>"']/g, function(char) {
+        return {
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&#039;"
+        }[char];
+      });
+    }
+  </script>
+</body>
+</html>
